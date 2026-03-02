@@ -3,9 +3,82 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
+	"go.uber.org/zap"
 )
+
+type BaseConfig struct {
+	Server    Server    `mapstructure:"server"`
+	Database  Database  `mapstructure:"database"`
+	Redis     Redis     `mapstructure:"redis"`
+	JWT       JWT       `mapstructure:"jwt"`
+	RateLimit RateLimit `mapstructure:"rate_limit"`
+}
+
+type Server struct {
+	Host            string        `mapstructure:"host"`
+	Port            int           `mapstructure:"port"`
+	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`
+	HealthEnabled   bool          `mapstructure:"health_enabled"`
+}
+
+type Database struct {
+	Driver string `mapstructure:"driver"`
+	DSN    string `mapstructure:"dsn"`
+}
+
+type Redis struct {
+	Addr     string `mapstructure:"addr"`
+	Password string `mapstructure:"password"`
+	DB       int    `mapstructure:"db"`
+}
+
+type JWT struct {
+	Secret string `mapstructure:"secret"`
+}
+
+type RateLimit struct {
+	Global struct {
+		RPS   float64 `mapstructure:"rps"`
+		Burst int     `mapstructure:"burst"`
+	} `mapstructure:"global"`
+	PerMethod map[string]struct {
+		RPS   float64 `mapstructure:"rps"`
+		Burst int     `mapstructure:"burst"`
+	} `mapstructure:"per_method"`
+	PerUser struct {
+		RPS            float64       `mapstructure:"rps"`
+		Burst          int           `mapstructure:"burst"`
+		MaxInactiveAge time.Duration `mapstructure:"max_inactive_age"`
+	} `mapstructure:"per_user"`
+}
+
+func LoadBase(path string, envPrefix string, logger *zap.Logger) *BaseConfig {
+	viper.SetConfigFile(path)
+	viper.AutomaticEnv()
+	viper.SetEnvPrefix(envPrefix)
+
+	if err := viper.ReadInConfig(); err != nil {
+		logger.Fatal("failed to read config", zap.Error(err))
+	}
+
+	var cfg BaseConfig
+	if err := viper.Unmarshal(&cfg); err != nil {
+		logger.Fatal("failed to unmarshal config", zap.Error(err))
+	}
+
+	// Дефолты
+	if cfg.Server.Host == "" {
+		cfg.Server.Host = "0.0.0.0"
+	}
+	if cfg.Server.ShutdownTimeout == 0 {
+		cfg.Server.ShutdownTimeout = 30 * time.Second
+	}
+
+	return &cfg
+}
 
 // Load загружает конфигурацию из файла и environment variables
 // configPath - путь к конфигурационному файлу (например, "configs/config.yaml")
