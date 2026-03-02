@@ -1,55 +1,42 @@
 package logger
 
 import (
+	"log"
+	"os"
+
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
-type Config struct {
-	Level       string `yaml:"level"`
-	Development bool   `yaml:"development"`
-	Encoding    string `yaml:"encoding"`
-}
-
-func New(cfg Config) (*zap.Logger, error) {
-	var config zap.Config
-
-	if cfg.Development {
-		config = zap.NewDevelopmentConfig()
-		config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
-	} else {
-		config = zap.NewProductionConfig()
+func New() *zap.Logger {
+	levelStr := os.Getenv("LOG_LEVEL")
+	if levelStr != "" {
+		levelStr = "info"
 	}
 
-	// Установка уровня логирования
-	level, err := zapcore.ParseLevel(cfg.Level)
-	if err != nil {
+	var level zapcore.Level
+	if err := level.UnmarshalText([]byte(levelStr)); err != nil {
 		level = zapcore.InfoLevel
 	}
-	config.Level = zap.NewAtomicLevelAt(level)
 
-	// Установка encoding
-	if cfg.Encoding != "" {
-		config.Encoding = cfg.Encoding
+	encoding := "json"
+	if os.Getenv("LOG_JSON") == "false" {
+		encoding = "console"
 	}
 
-	return config.Build()
-}
+	config := zap.Config{
+		Level:            zap.NewAtomicLevelAt(level),
+		Development:      false,
+		Encoding:         encoding,
+		EncoderConfig:    zap.NewProductionEncoderConfig(),
+		OutputPaths:      []string{"stdout"},
+		ErrorOutputPaths: []string{"stderr"},
+	}
 
-// NewDefault создает logger с настройками по умолчанию (production)
-func NewDefault() (*zap.Logger, error) {
-	return New(Config{
-		Level:       "info",
-		Development: false,
-		Encoding:    "json",
-	})
-}
+	logger, err := config.Build()
+	if err != nil {
+		log.Fatalf("failed to initialize logger: %v", err)
+	}
 
-// NewDevelopment создает logger для разработки
-func NewDevelopment() (*zap.Logger, error) {
-	return New(Config{
-		Level:       "debug",
-		Development: true,
-		Encoding:    "console",
-	})
+	return logger
 }
