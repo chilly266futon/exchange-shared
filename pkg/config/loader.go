@@ -60,6 +60,7 @@ type CircuitBreaker struct {
 	Enabled      bool          `mapstructure:"enabled"`
 	MaxFailures  uint32        `mapstructure:"max_failures"`
 	Timeout      time.Duration `mapstructure:"timeout"`
+	Attempts     uint32        `mapstructure:"attempts"`
 	Interval     time.Duration `mapstructure:"interval"`
 	MaxRequests  uint32        `mapstructure:"max_requests"`
 	RetryDelay   time.Duration `mapstructure:"retry_delay"`
@@ -93,6 +94,9 @@ func LoadBase(path string, envPrefix string, logger *zap.Logger) *BaseConfig {
 	}
 	if cfg.CircuitBreaker.Timeout == 0 {
 		cfg.CircuitBreaker.Timeout = 5 * time.Second
+	}
+	if cfg.CircuitBreaker.Attempts == 0 {
+		cfg.CircuitBreaker.Attempts = 3
 	}
 	if cfg.CircuitBreaker.Interval == 0 {
 		cfg.CircuitBreaker.Interval = 30 * time.Second
