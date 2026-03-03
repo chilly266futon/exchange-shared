@@ -12,6 +12,7 @@ import (
 )
 
 type Config struct {
+	Enabled      bool          // Включение/отключение Circuit Breaker
 	MaxRequests  uint32        // Максимальное количество запросов в полуоткрытом состоянии
 	Interval     time.Duration // Интервал для сброса счетчиков
 	Timeout      time.Duration // Таймаут для перехода в полуоткрытое состояние
