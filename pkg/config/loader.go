@@ -10,11 +10,12 @@ import (
 )
 
 type BaseConfig struct {
-	Server    Server    `mapstructure:"server"`
-	Database  Database  `mapstructure:"database"`
-	Redis     Redis     `mapstructure:"redis"`
-	JWT       JWT       `mapstructure:"jwt"`
-	RateLimit RateLimit `mapstructure:"rate_limit"`
+	Server         Server         `mapstructure:"server"`
+	Database       Database       `mapstructure:"database"`
+	Redis          Redis          `mapstructure:"redis"`
+	JWT            JWT            `mapstructure:"jwt"`
+	RateLimit      RateLimit      `mapstructure:"rate_limit"`
+	CircuitBreaker CircuitBreaker `mapstructure:"circuit_breaker"`
 }
 
 type Server struct {
@@ -55,6 +56,17 @@ type RateLimit struct {
 	} `mapstructure:"per_user"`
 }
 
+type CircuitBreaker struct {
+	Enabled      bool          `mapstructure:"enabled"`
+	MaxFailures  uint32        `mapstructure:"max_failures"`
+	Timeout      time.Duration `mapstructure:"timeout"`
+	Interval     time.Duration `mapstructure:"interval"`
+	MaxRequests  uint32        `mapstructure:"max_requests"`
+	RetryDelay   time.Duration `mapstructure:"retry_delay"`
+	MinRequests  uint32        `mapstructure:"min_requests"`
+	FailureRatio float64       `mapstructure:"failure_ratio"`
+}
+
 func LoadBase(path string, envPrefix string, logger *zap.Logger) *BaseConfig {
 	viper.SetConfigFile(path)
 	viper.AutomaticEnv()
@@ -75,6 +87,27 @@ func LoadBase(path string, envPrefix string, logger *zap.Logger) *BaseConfig {
 	}
 	if cfg.Server.ShutdownTimeout == 0 {
 		cfg.Server.ShutdownTimeout = 30 * time.Second
+	}
+	if cfg.CircuitBreaker.MaxFailures == 0 {
+		cfg.CircuitBreaker.MaxFailures = 5
+	}
+	if cfg.CircuitBreaker.Timeout == 0 {
+		cfg.CircuitBreaker.Timeout = 5 * time.Second
+	}
+	if cfg.CircuitBreaker.Interval == 0 {
+		cfg.CircuitBreaker.Interval = 30 * time.Second
+	}
+	if cfg.CircuitBreaker.MaxRequests == 0 {
+		cfg.CircuitBreaker.MaxRequests = 3
+	}
+	if cfg.CircuitBreaker.RetryDelay == 0 {
+		cfg.CircuitBreaker.RetryDelay = 100 * time.Millisecond
+	}
+	if cfg.CircuitBreaker.MinRequests == 0 {
+		cfg.CircuitBreaker.MinRequests = 10
+	}
+	if cfg.CircuitBreaker.FailureRatio == 0 {
+		cfg.CircuitBreaker.FailureRatio = 0.6
 	}
 
 	return &cfg

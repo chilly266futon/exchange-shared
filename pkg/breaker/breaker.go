@@ -12,12 +12,13 @@ import (
 )
 
 type Config struct {
-	MaxRequests uint32        // Максимальное количество запросов в полуоткрытом состоянии
-	Interval    time.Duration // Интервал для сброса счетчиков
-	Timeout     time.Duration // Таймаут для перехода в полуоткрытое состояние
-	Attempts    uint32        // Количество попыток перед возвратом ошибки
-	RetryDelay  time.Duration // Задержка между попытками
-	ReadyToTrip func(counts gobreaker.Counts) bool
+	MaxRequests  uint32        // Максимальное количество запросов в полуоткрытом состоянии
+	Interval     time.Duration // Интервал для сброса счетчиков
+	Timeout      time.Duration // Таймаут для перехода в полуоткрытое состояние
+	Attempts     uint32        // Количество попыток перед возвратом ошибки
+	RetryDelay   time.Duration // Задержка между попытками
+	MinRequests  uint32        // Минимальное количество запросов для оценки
+	FailureRatio float64       // Процент неудачных запросов для открытия цепи (0.0 - 1.0)
 }
 
 func DefaultConfig() Config {
@@ -27,20 +28,22 @@ func DefaultConfig() Config {
 		Timeout:     30 * time.Second,
 		Attempts:    3,
 		RetryDelay:  100 * time.Millisecond,
-		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
-			return counts.Requests >= 10 && failureRatio >= 0.6
-		},
 	}
 }
 
 func UnaryClientInterceptor(cfg Config) grpc.UnaryClientInterceptor {
 	cb := gobreaker.NewCircuitBreaker(gobreaker.Settings{
-		Name:        "grpc-client",
+		Name: "grpc-client",
+		ReadyToTrip: func(counts gobreaker.Counts) bool {
+			if counts.Requests < cfg.MinRequests {
+				return false
+			}
+			failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
+			return failureRatio >= cfg.FailureRatio
+		},
+		Timeout:     cfg.Timeout,
 		MaxRequests: cfg.MaxRequests,
 		Interval:    cfg.Interval,
-		Timeout:     cfg.Timeout,
-		ReadyToTrip: cfg.ReadyToTrip,
 		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
 			// TODO: интеграция с внешним мониторингом
 		},
@@ -131,7 +134,6 @@ func NewWrapper(name string, cfg Config) *Wrapper {
 		MaxRequests:   cfg.MaxRequests,
 		Interval:      cfg.Interval,
 		Timeout:       cfg.Timeout,
-		ReadyToTrip:   cfg.ReadyToTrip,
 		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {},
 	})
 
