@@ -10,7 +10,7 @@ import (
 
 func New() *zap.Logger {
 	levelStr := os.Getenv("LOG_LEVEL")
-	if levelStr != "" {
+	if levelStr == "" {
 		levelStr = "info"
 	}
 

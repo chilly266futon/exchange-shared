@@ -9,33 +9,37 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/chilly266futon/exchange-shared/pkg/config"
+	"github.com/chilly266futon/exchange-shared/pkg/metrics"
 )
 
-type Config struct {
-	Enabled      bool          // Включение/отключение Circuit Breaker
-	MaxRequests  uint32        // Максимальное количество запросов в полуоткрытом состоянии
-	Interval     time.Duration // Интервал для сброса счетчиков
-	Timeout      time.Duration // Таймаут для перехода в полуоткрытое состояние
-	Attempts     uint32        // Количество попыток перед возвратом ошибки
-	RetryDelay   time.Duration // Задержка между попытками
-	MinRequests  uint32        // Минимальное количество запросов для оценки
-	FailureRatio float64       // Процент неудачных запросов для открытия цепи (0.0 - 1.0)
-}
-
-func DefaultConfig() Config {
-	return Config{
-		MaxRequests: 3,
-		Interval:    10 * time.Second,
-		Timeout:     30 * time.Second,
-		Attempts:    3,
-		RetryDelay:  100 * time.Millisecond,
+func DefaultConfig() config.CircuitBreaker {
+	return config.CircuitBreaker{
+		MaxRequests:  3,
+		Interval:     10 * time.Second,
+		Timeout:      30 * time.Second,
+		Attempts:     3,
+		RetryDelay:   100 * time.Millisecond,
+		MinRequests:  10,
+		FailureRatio: 0.6,
+		ReadyToTrip: func(counts gobreaker.Counts) bool {
+			if counts.Requests < 10 {
+				return false
+			}
+			failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
+			return failureRatio >= 0.6
+		},
 	}
 }
 
-func UnaryClientInterceptor(cfg Config) grpc.UnaryClientInterceptor {
+func UnaryClientInterceptor(cfg config.CircuitBreaker, m *metrics.Metrics) grpc.UnaryClientInterceptor {
 	cb := gobreaker.NewCircuitBreaker(gobreaker.Settings{
 		Name: "grpc-client",
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
+			if cfg.ReadyToTrip != nil {
+				return cfg.ReadyToTrip(counts)
+			}
 			if counts.Requests < cfg.MinRequests {
 				return false
 			}
@@ -46,7 +50,9 @@ func UnaryClientInterceptor(cfg Config) grpc.UnaryClientInterceptor {
 		MaxRequests: cfg.MaxRequests,
 		Interval:    cfg.Interval,
 		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
-			// TODO: интеграция с внешним мониторингом
+			if m != nil {
+				m.RecordBreakerStateChange(name, from.String(), to.String())
+			}
 		},
 	})
 
@@ -129,7 +135,7 @@ type Wrapper struct {
 	delay    time.Duration
 }
 
-func NewWrapper(name string, cfg Config) *Wrapper {
+func NewWrapper(name string, cfg config.CircuitBreaker) *Wrapper {
 	cb := gobreaker.NewCircuitBreaker(gobreaker.Settings{
 		Name:          name,
 		MaxRequests:   cfg.MaxRequests,
@@ -151,61 +157,19 @@ func NewWrapper(name string, cfg Config) *Wrapper {
 }
 
 func (w *Wrapper) Execute(fn func() error) error {
-	var lastErr error
-
 	for i := uint32(0); i < w.attempts; i++ {
 		if i > 0 && w.delay > 0 {
 			time.Sleep(w.delay)
 		}
-
 		_, err := w.cb.Execute(func() (any, error) {
 			return nil, fn()
 		})
-
 		if err == nil {
 			return nil
 		}
-
-		lastErr = err
-
-		if errors.Is(err, gobreaker.ErrOpenState) || errors.Is(err, gobreaker.ErrTooManyRequests) {
+		if i == w.attempts-1 {
 			return err
 		}
 	}
-
-	return lastErr
-}
-
-func (w *Wrapper) ExecuteWithContext(ctx context.Context, fn func() error) error {
-	var lastErr error
-
-	for i := uint32(0); i < w.attempts; i++ {
-		if i > 0 && w.delay > 0 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(w.delay):
-			}
-		}
-
-		_, err := w.cb.Execute(func() (any, error) {
-			return nil, fn()
-		})
-
-		if err == nil {
-			return nil
-		}
-
-		lastErr = err
-
-		if errors.Is(err, gobreaker.ErrOpenState) || errors.Is(err, gobreaker.ErrTooManyRequests) {
-			return err
-		}
-	}
-
-	return lastErr
-}
-
-func (w *Wrapper) State() gobreaker.State {
-	return w.cb.State()
+	return nil
 }

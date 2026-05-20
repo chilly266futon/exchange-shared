@@ -5,36 +5,60 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sony/gobreaker"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 )
 
+type LoggerConfig struct {
+	SlowThreshold     time.Duration `mapstructure:"slow_threshold"`
+	LogNormalRequests bool          `mapstructure:"log_normal_requests"`
+}
+
 type BaseConfig struct {
-	Server         Server         `mapstructure:"server"`
-	Database       Database       `mapstructure:"database"`
-	Redis          Redis          `mapstructure:"redis"`
-	JWT            JWT            `mapstructure:"jwt"`
-	RateLimit      RateLimit      `mapstructure:"rate_limit"`
-	CircuitBreaker CircuitBreaker `mapstructure:"circuit_breaker"`
+	Server            Server                   `mapstructure:"server"`
+	Database          Database                 `mapstructure:"database"`
+	Redis             Redis                    `mapstructure:"redis"`
+	JWT               JWT                      `mapstructure:"jwt"`
+	RateLimit         RateLimit                `mapstructure:"rate_limit"`
+	CircuitBreaker    CircuitBreaker           `mapstructure:"circuit_breaker"`
+	GrpcBackoff       GrpcBackoff              `mapstructure:"grpc_backoff"`
+	Logger            LoggerConfig             `mapstructure:"logger"`
+	OperationTimeouts map[string]time.Duration `mapstructure:"operation_timeouts"`
 }
 
 type Server struct {
-	Host            string        `mapstructure:"host"`
-	Port            int           `mapstructure:"port"`
-	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`
-	HealthEnabled   bool          `mapstructure:"health_enabled"`
+	Host               string        `mapstructure:"host"`
+	Port               int           `mapstructure:"port"`
+	MetricsPort        int           `mapstructure:"metrics_port"`
+	ShutdownTimeout    time.Duration `mapstructure:"shutdown_timeout"`
+	HealthEnabled      bool          `mapstructure:"health_enabled"`
+	HealthCheckTimeout time.Duration `mapstructure:"health_check_timeout"`
 }
 
 type Database struct {
-	Driver string `mapstructure:"driver"`
-	DSN    string `mapstructure:"dsn"`
+	Driver            string        `mapstructure:"driver"`
+	DSN               string        `mapstructure:"dsn"`
+	MaxConns          int32         `mapstructure:"max_conns"`
+	MinConns          int32         `mapstructure:"min_conns"`
+	MaxConnLifetime   time.Duration `mapstructure:"max_conn_lifetime"`
+	MaxConnIdleTime   time.Duration `mapstructure:"max_conn_idle_time"`
+	HealthCheckPeriod time.Duration `mapstructure:"health_check_period"`
+	RetryTimeout      time.Duration `mapstructure:"retry_timeout"`
+	RetryInterval     time.Duration `mapstructure:"retry_interval"`
+	MaxRetries        int           `mapstructure:"max_retries"`
 }
 
 type Redis struct {
-	Addr     string `mapstructure:"addr"`
-	Password string `mapstructure:"password"`
-	DB       int    `mapstructure:"db"`
-	PoolSize int    `mapstructure:"pool_size"`
+	Addr            string        `mapstructure:"addr"`
+	Password        string        `mapstructure:"password"`
+	DB              int           `mapstructure:"db"`
+	PoolSize        int           `mapstructure:"pool_size"`
+	RetryTimeout    time.Duration `mapstructure:"retry_timeout"`
+	RetryInterval   time.Duration `mapstructure:"retry_interval"`
+	MaxRetries      int           `mapstructure:"max_retries"`
+	MinRetryBackoff time.Duration `mapstructure:"min_retry_backoff"`
+	MaxRetryBackoff time.Duration `mapstructure:"max_retry_backoff"`
 }
 
 type JWT struct {
@@ -67,12 +91,30 @@ type CircuitBreaker struct {
 	RetryDelay   time.Duration `mapstructure:"retry_delay"`
 	MinRequests  uint32        `mapstructure:"min_requests"`
 	FailureRatio float64       `mapstructure:"failure_ratio"`
+	ReadyToTrip  func(gobreaker.Counts) bool
+}
+
+type GrpcBackoff struct {
+	Enabled     bool          `mapstructure:"enabled"`
+	BaseDelay   time.Duration `mapstructure:"base_delay"`
+	Multiplier  float64       `mapstructure:"multiplier"`
+	MaxDelay    time.Duration `mapstructure:"max_delay"`
+	MaxAttempts uint64        `mapstructure:"max_attempts"`
 }
 
 func LoadBase(path string, envPrefix string, logger *zap.Logger) *BaseConfig {
 	viper.SetConfigFile(path)
-	viper.AutomaticEnv()
 	viper.SetEnvPrefix(envPrefix)
+	viper.AutomaticEnv()
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+
+	// Явные биндинги для ключевых полей, чтобы env-переменные
+	// вида PREFIX_DATABASE_DSN гарантированно перезаписывали конфиг
+	_ = viper.BindEnv("database.dsn")
+	_ = viper.BindEnv("redis.addr")
+	_ = viper.BindEnv("redis.password")
+	_ = viper.BindEnv("redis.db")
+	_ = viper.BindEnv("jwt.secret")
 
 	if err := viper.ReadInConfig(); err != nil {
 		logger.Fatal("failed to read config", zap.Error(err))
@@ -83,12 +125,33 @@ func LoadBase(path string, envPrefix string, logger *zap.Logger) *BaseConfig {
 		logger.Fatal("failed to unmarshal config", zap.Error(err))
 	}
 
+	// viper.Unmarshal не подхватывает env для вложенных структур,
+	// поэтому перезаписываем вручную
+	if v := viper.GetString("database.dsn"); v != "" {
+		cfg.Database.DSN = v
+	}
+	if v := viper.GetString("redis.addr"); v != "" {
+		cfg.Redis.Addr = v
+	}
+	if v := viper.GetString("redis.password"); v != "" {
+		cfg.Redis.Password = v
+	}
+	if v := viper.GetInt("redis.db"); v != 0 {
+		cfg.Redis.DB = v
+	}
+	if v := viper.GetString("jwt.secret"); v != "" {
+		cfg.JWT.Secret = v
+	}
+
 	// Дефолты
 	if cfg.Server.Host == "" {
 		cfg.Server.Host = "0.0.0.0"
 	}
 	if cfg.Server.ShutdownTimeout == 0 {
 		cfg.Server.ShutdownTimeout = 30 * time.Second
+	}
+	if cfg.Server.MetricsPort == 0 {
+		cfg.Server.MetricsPort = 9090
 	}
 	if cfg.CircuitBreaker.MaxFailures == 0 {
 		cfg.CircuitBreaker.MaxFailures = 5
@@ -114,6 +177,29 @@ func LoadBase(path string, envPrefix string, logger *zap.Logger) *BaseConfig {
 	if cfg.CircuitBreaker.FailureRatio == 0 {
 		cfg.CircuitBreaker.FailureRatio = 0.6
 	}
+
+	// Дефолты для GrpcBackoff
+	if cfg.GrpcBackoff.BaseDelay == 0 {
+		cfg.GrpcBackoff.BaseDelay = 200 * time.Millisecond
+	}
+	if cfg.GrpcBackoff.MaxDelay == 0 {
+		cfg.GrpcBackoff.MaxDelay = 15 * time.Second
+	}
+	if cfg.GrpcBackoff.MaxAttempts == 0 {
+		cfg.GrpcBackoff.MaxAttempts = 5
+	}
+	if cfg.GrpcBackoff.Multiplier == 0 {
+		cfg.GrpcBackoff.Multiplier = 2.0
+	}
+	if !cfg.GrpcBackoff.Enabled {
+		cfg.GrpcBackoff.Enabled = true
+	}
+
+	// Дефолты для OperationTimeouts
+	if cfg.OperationTimeouts == nil {
+		cfg.OperationTimeouts = make(map[string]time.Duration)
+	}
+	// Можно установить какие-то общие таймауты, но оставим пустыми
 
 	return &cfg
 }

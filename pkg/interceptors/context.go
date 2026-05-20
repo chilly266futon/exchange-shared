@@ -53,11 +53,17 @@ func TraceIDClientInterceptor() grpc.UnaryClientInterceptor {
 	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 		traceID := GetTraceID(ctx)
 		if traceID == "" {
-			traceID = "unknown"
+			traceID = uuid.NewString()
 		}
 
-		md := metadata.Pairs("x-trace-id", traceID)
-		ctx = metadata.NewOutgoingContext(ctx, md)
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-trace-id", traceID)
+
+		// Прокидываем authorization из incoming context (service-to-service)
+		if md, ok := metadata.FromIncomingContext(ctx); ok {
+			if authVals := md.Get("authorization"); len(authVals) > 0 {
+				ctx = metadata.AppendToOutgoingContext(ctx, "authorization", authVals[0])
+			}
+		}
 
 		return invoker(ctx, method, req, reply, cc, opts...)
 	}

@@ -1,68 +1,45 @@
 package grpcutil
 
 import (
-	"context"
 	"fmt"
 	"time"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 )
 
-// ClientConfig конфигурация gRPC клиента
-type ClientConfig struct {
-	Address        string
-	Timeout        time.Duration
-	MaxRetries     int
-	EnableTLS      bool
-	ConnectTimeout time.Duration
-}
-
-// DefaultClientConfig возвращает конфигурацию по умолчанию
-func DefaultClientConfig(address string) ClientConfig {
-	return ClientConfig{
-		Address:        address,
-		Timeout:        5 * time.Second,
-		MaxRetries:     3,
-		EnableTLS:      false,
-		ConnectTimeout: 10 * time.Second,
-	}
-}
-
-// NewClient создает новое gRPC соединение с настройками
-func NewClient(cfg ClientConfig, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
-	// Базовые опции
-	dialOpts := []grpc.DialOption{
-		grpc.WithBlock(),
-		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(10*1024*1024), // 10MB
-			grpc.MaxCallSendMsgSize(10*1024*1024), // 10MB
-		),
+func NewGRPCClient(addr string, logger *zap.Logger, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
+	// Keepalive client parameters
+	keepaliveParams := keepalive.ClientParameters{
+		Time:                30 * time.Second, // send pings every 30 seconds if there is no activity
+		Timeout:             10 * time.Second, // wait 10 seconds for ping ack before considering the connection dead
+		PermitWithoutStream: true,             // send pings even without active streams
 	}
 
-	dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// Backoff configuration for connection retry
+	backoffConfig := backoff.DefaultConfig
+	backoffConfig.BaseDelay = 1 * time.Second
+	backoffConfig.Multiplier = 1.6
+	backoffConfig.Jitter = 0.2
+	backoffConfig.MaxDelay = 30 * time.Second
 
-	// Добавляем пользовательские опции
-	dialOpts = append(dialOpts, opts...)
+	defaultOpts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithKeepaliveParams(keepaliveParams),
+		grpc.WithConnectParams(grpc.ConnectParams{
+			Backoff:           backoffConfig,
+			MinConnectTimeout: 20 * time.Second,
+		}),
+	}
+	allOpts := append(defaultOpts, opts...)
 
-	// Создаем контекст с таймаутом для подключения
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.ConnectTimeout)
-	defer cancel()
-
-	// Подключаемся
-	conn, err := grpc.DialContext(ctx, cfg.Address, dialOpts...)
+	client, err := grpc.NewClient(addr, allOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to %s: %w", cfg.Address, err)
+		logger.Error("failed to create gRPC client", zap.Error(err), zap.String("address", addr))
+		return nil, fmt.Errorf("failed to create gRPC client: %w", err)
 	}
-
-	return conn, nil
-}
-
-// MustNewClient создает клиент или паникует при ошибке
-func MustNewClient(cfg ClientConfig, opts ...grpc.DialOption) *grpc.ClientConn {
-	conn, err := NewClient(cfg, opts...)
-	if err != nil {
-		panic(fmt.Sprintf("failed to create grpc client: %v", err))
-	}
-	return conn
+	return client, nil
 }

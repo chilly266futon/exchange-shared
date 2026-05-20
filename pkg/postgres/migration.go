@@ -2,18 +2,18 @@ package postgres
 
 import (
 	"database/sql"
-	"embed"
+	"io/fs"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 )
 
-//go:embed migrations/*.sql
-var embedMigrations embed.FS
-
-func RunMigrations(pool *pgxpool.Pool) error {
-	goose.SetBaseFS(embedMigrations)
+// RunMigrations применяет SQL-миграции из переданной файловой системы.
+// migrationsFS — embed.FS (или любой fs.FS) с .sql файлами,
+// dir — путь к папке с миграциями внутри FS (например "migrations").
+func RunMigrations(pool *pgxpool.Pool, migrationsFS fs.FS, dir string) error {
+	goose.SetBaseFS(migrationsFS)
 
 	if err := goose.SetDialect("postgres"); err != nil {
 		return err
@@ -25,5 +25,5 @@ func RunMigrations(pool *pgxpool.Pool) error {
 	}
 	defer sqlDB.Close()
 
-	return goose.Up(sqlDB, "migrations")
+	return goose.Up(sqlDB, dir)
 }

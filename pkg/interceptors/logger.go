@@ -9,7 +9,11 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func LoggerInterceptor(logger *zap.Logger) grpc.UnaryServerInterceptor {
+// LoggerInterceptor возвращает grpc.UnaryServerInterceptor с поддержкой гибкой настройки логирования.
+// Ошибки всегда логируются на Error.
+// Медленные запросы (дольше slowThreshold) — на Warn.
+// Обычные успешные — на Debug, если logNormalRequests=true, иначе не логируются.
+func LoggerInterceptor(logger *zap.Logger, slowThreshold time.Duration, logNormalRequests bool) grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
 		req any,
@@ -40,8 +44,10 @@ func LoggerInterceptor(logger *zap.Logger) grpc.UnaryServerInterceptor {
 				zap.String("error", err.Error()),
 			)
 			logger.Error("grpc request failed", fields...)
-		} else {
-			logger.Info("grpc request completed", fields...)
+		} else if slowThreshold > 0 && duration > slowThreshold {
+			logger.Warn("grpc request completed (slow)", fields...)
+		} else if logNormalRequests {
+			logger.Debug("grpc request completed", fields...)
 		}
 
 		return resp, err

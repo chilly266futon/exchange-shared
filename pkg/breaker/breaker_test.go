@@ -1,7 +1,6 @@
 package breaker
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
@@ -105,42 +104,6 @@ func TestWrapper_Execute_AllAttemptsFail(t *testing.T) {
 	assert.Equal(t, 3, callCount)
 }
 
-func TestWrapper_ExecuteWithContext_Success(t *testing.T) {
-	cfg := DefaultConfig()
-	w := NewWrapper("test", cfg)
-
-	ctx := context.Background()
-
-	err := w.ExecuteWithContext(ctx, func() error {
-		return nil
-	})
-
-	assert.NoError(t, err)
-}
-
-func TestWrapper_ExecuteWithContext(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.Attempts = 5
-	cfg.RetryDelay = 100 * time.Millisecond
-	w := NewWrapper("test", cfg)
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	callCount := 0
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		cancel()
-	}()
-
-	err := w.ExecuteWithContext(ctx, func() error {
-		callCount++
-		return errors.New("error")
-	})
-
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, context.Canceled) || callCount < 5)
-}
-
 func TestWrapper_ZeroAttempts(t *testing.T) {
 	cfg := DefaultConfig()
 	w := NewWrapper("test", cfg)
@@ -206,4 +169,57 @@ func TestIsRetryable(t *testing.T) {
 	}
 }
 
-// TODO:
+func TestIsRetryable_AdditionalCodes(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "internal is not retryable",
+			err:  status.Error(codes.Internal, "internal"),
+			want: false,
+		},
+		{
+			name: "unknown is not retryable",
+			err:  status.Error(codes.Unknown, "unknown"),
+			want: false,
+		},
+		{
+			name: "canceled is not retryable",
+			err:  status.Error(codes.Canceled, "canceled"),
+			want: false,
+		},
+		{
+			name: "already exists is not retryable",
+			err:  status.Error(codes.AlreadyExists, "already exists"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isRetryable(tt.err)
+			assert.Equal(t, tt.want, result)
+		})
+	}
+}
+
+func TestWrapper_WithZeroRetryDelay(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Attempts = 3
+	cfg.RetryDelay = 0
+	w := NewWrapper("test", cfg)
+
+	callCount := 0
+	err := w.Execute(func() error {
+		callCount++
+		if callCount < 3 {
+			return errors.New("temporary error")
+		}
+		return nil
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, 3, callCount)
+}
